@@ -5,10 +5,12 @@
 
 import os
 import sys
-import dnf
 import argparse
 import shutil
 import tempfile
+
+import libdnf5 as dnf5
+Priority_RUNTIME = dnf5.conf.Option.Priority_RUNTIME
 
 def setup_argparse():
     parser = argparse.ArgumentParser(description="Output packages DNF has selected")
@@ -61,28 +63,32 @@ def get_dbo(tempdir, repositories, releasever, best, proxy=None):
     if not os.path.isdir(installroot):
         os.mkdir(installroot)
 
-    dnfbase = dnf.Base()
-    conf = dnfbase.conf
+    dnfbase = dnf5.base.Base()
+    conf = dnfbase.get_config()
 
     print("Use highest NVR package: %s" % best)
-    conf.best = best
+    conf.best().set(Priority_RUNTIME, best)
 
     # setup dirs.
-    conf.logdir = logdir
-    conf.cachedir = cachedir
+    conf.logdir().set(Priority_RUNTIME, logdir)
+    conf.cachedir().set(Priority_RUNTIME, cachedir)
 
     # Turn off logging to the console
-    conf.debuglevel = 10
-    conf.errorlevel = 0
-    conf.debug_solver = True
+    conf.debuglevel().set(Priority_RUNTIME, 10)
+    conf.errorlevel().set(Priority_RUNTIME, 0)
+    conf.debug_solver().set(Priority_RUNTIME, True)
 
-    conf.releasever = releasever
-    conf.installroot = installroot
-    conf.prepend_installroot('persistdir')
-    conf.tsflags.append('nodocs')
+## MISSING    conf.releasever = releasever
+    conf.installroot().set(Priority_RUNTIME, installroot)
+## ALWAYS ADDED??    conf.prepend_installroot('persistdir')
+
+## HAHAHA. ARGH.
+##    conf.tsflags.append('nodocs')
+    conf.tsflags().set(Priority_RUNTIME, conf.tsflags().get_value() + ("nodocs",))
 
     if proxy:
-        conf.proxy = proxy
+        conf.proxy().set(Priority_RUNTIME, proxy)
+
 
     # Add .repo files
     if repo_files:
@@ -91,8 +97,12 @@ def get_dbo(tempdir, repositories, releasever, best, proxy=None):
             os.mkdir(reposdir)
         for r in repo_files:
             shutil.copy2(r, reposdir)
-        conf.reposdir = [reposdir]
-        dnfbase.read_all_repos()
+        conf.reposdir().set(Priority_RUNTIME,reposdir)
+
+    # Cannot change config after this
+    dnfbase.setup()
+
+    sack = dnfbase.get_repo_sack()
 
     # add the repositories
     for i, r in enumerate(repo_urls):
@@ -100,21 +110,15 @@ def get_dbo(tempdir, repositories, releasever, best, proxy=None):
             print("Skipping source repo: %s" % r)
             continue
         repo_name = "lorax-repo-%d" % i
-        repo = dnf.repo.Repo(repo_name, conf)
-        repo.baseurl = [r]
-        repo.skip_if_unavailable = False
-        repo.enable()
-        dnfbase.repos.add(repo)
+        repo = sack.create_repo(repo_name)
+        conf = repo.get_config()
+        conf.baseurl().set(Priority_RUNTIME, r)
+        conf.skip_if_unavailable().set(Priority_RUNTIME, False)
         print("Added '%s': %s" % (repo_name, r))
-        print("Fetching metadata...")
-        try:
-            repo.load()
-        except dnf.exceptions.RepoError as e:
-            print("Error fetching metadata for %s: %s" % (repo_name, e))
-            return None
 
-    dnfbase.fill_sack(load_system_repo=False)
-    dnfbase.read_comps()
+    print("Fetching metadata...")
+    sack.update_and_load_enabled_repos(False)
+    print()
 
     return dnfbase
 
@@ -185,32 +189,26 @@ if __name__ == "__main__":
         sys.exit(0)
 
     # info about the packages
-    q = dbo.sack.query()
-    available = q.available()
-    for pkg in packages:
-        answer = available.filter(name=pkg)
-        for pkg in answer:
-                print(pkg)
+    q = dnf5.rpm.PackageQuery(dbo)
+    q.filter_name(packages)
+    for pkg in q:
+            print(pkg.get_nevra())
+    print()
 
+    goal = dnf5.base.Goal(dbo)
     # Print all the packages DNF picks
     for pkg in packages:
         print("Adding %s to the transaction" % pkg)
-        try:
-            dbo.install(pkg)
-        except Exception as e:
-            print("Failed to install %s\n%s" % (pkg, e))
+        goal.add_rpm_install(pkg)
+    print()
 
-    try:
-        print("Checking dependencies")
-        dbo.resolve()
-    except dnf.exceptions.DepsolveError as e:
-        print("Dependency check failed: %s" % e)
-        raise
-    print("%d packages selected" % len(dbo.transaction))
-    if len(dbo.transaction) == 0:
-        raise Exception("No packages in transaction")
+    print("Getting dependencies...")
+    trx = goal.resolve()
+    print()
+
+    import pdb; pdb.set_trace()
 
     # Print what DNF picked.
-    for pkg in dbo.transaction.install_set:
-        print("%s - %s" % (pkg.repoid, pkg.pkgtup))
-
+    for t in trx.get_transaction_packages():
+##        print("%s - %s" % (pkg.repoid, pkg.pkgtup))
+        print(t.get_package().get_nevra())
