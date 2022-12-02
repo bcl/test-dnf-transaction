@@ -116,6 +116,9 @@ def get_dbo(tempdir, repositories, releasever, best, proxy=None):
         conf.skip_if_unavailable().set(Priority_RUNTIME, False)
         print("Added '%s': %s" % (repo_name, r))
 
+    # Have to call this to add the repos from reposdir
+    sack.create_repos_from_reposdir()
+
     print("Fetching metadata...")
     sack.update_and_load_enabled_repos(False)
     print()
@@ -144,27 +147,18 @@ def find_package_parent(pkg_name, dbo, packages):
     for p in packages:
         package_set += [p]
 
-        dbo.reset()
-
+        goal = dnf5.base.Goal(dbo)
         for pkg in package_set:
-            try:
-                dbo.install(pkg)
-            except Exception as e:
-                print("Failed to install %s\n%s" % (pkg, e))
+            goal.add_rpm_install(pkg)
 
-        try:
-            dbo.resolve()
-        except dnf.exceptions.DepsolveError as e:
-            print("Dependency check failed: %s" % e)
-            raise
-        if len(dbo.transaction) == 0:
-            raise Exception("No packages in transaction")
+        print(f"Getting dependencies for: {package_set}")
+        trx = goal.resolve()
+        print()
 
-        # Print what DNF picked.
-        for pkg in dbo.transaction.install_set:
-            if pkg_name in pkg.pkgtup[0]:
-                print("FOUND IT! %s pulled in %s" % (p, pkg_name))
-                print(package_set)
+        for t in trx.get_transaction_packages():
+            pkg = t.get_package()
+            if pkg_name in pkg.get_name():
+                print(f"FOUND IT! {pkg_name} is pulled in by {p}")
                 return
 
 if __name__ == "__main__":
@@ -206,9 +200,6 @@ if __name__ == "__main__":
     trx = goal.resolve()
     print()
 
-    import pdb; pdb.set_trace()
-
     # Print what DNF picked.
     for t in trx.get_transaction_packages():
-##        print("%s - %s" % (pkg.repoid, pkg.pkgtup))
         print(t.get_package().get_nevra())
